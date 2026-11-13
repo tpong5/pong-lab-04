@@ -1,0 +1,427 @@
+---
+title: "9041 Assignment 4"
+author: "Timothy Pong"
+date: "November 13, 2026"
+format: 
+    html:
+      toc: true
+      code-fold: true
+      code-summary: "Show code"
+      df-print: paged
+execute:
+    echo: false
+    warning: false
+---
+
+## **Load Dataset**
+
+```{r, setup}
+
+library(glmmTMB)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom.mixed)
+library(performance)
+library(gt)
+library(readr)
+library(DHARMa)
+library(ggeffects)
+library(titanic)
+
+titanic <- titanic_train
+
+#Keep the same complete-case sample for every model
+titanic <- titanic |>
+  select(Survived, Sex, Age, Pclass) |>
+  drop_na() |>
+  mutate(
+    Sex.Binary = case_when(
+      Sex == "male" ~ 0,
+      Sex == "female" ~ 1)) |>
+  mutate(
+    Survived.Char = case_when(
+      Survived == 0 ~ "Died",
+      Survived == 1 ~ "Survived")) |>
+  mutate(
+    Pclass.Char = case_when(
+      Pclass == "1" ~ "First Class",
+      Pclass == "2" ~ "Second Class",
+      Pclass == "3" ~ "Third Class")) |>
+  mutate(Pclass = factor(Pclass, levels = c(1, 2, 3))) |>
+  select(Survived, Survived.Char, Sex, Sex.Binary, Pclass, Pclass.Char, Age)
+ 
+n <- nrow(titanic)
+```
+
+### Descriptives for Continuous Variable(s) - Age
+
+```{r, descriptives for age}
+# Descriptive table for continuous variable - Age
+descriptives <- titanic |>
+  summarise(
+    across(
+      c(Age),
+      list(mean = mean, sd = sd, min = min, max = max)
+    )
+  ) |>
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_sep = "_"
+  )
+
+descriptives |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 2)
+```
+
+### Descriptives for Categorical Variables - Survived, Sex, Pclass
+
+```{r, categorical counts}
+# Descriptive table for categorical variable - Survived
+titanic |>
+  count(Survived) |>
+  gt()
+# Descriptive table for categorical variable - Sex
+titanic |>
+  count(Sex) |>
+  gt()
+# Descriptive table for categorical variable - Pclass.char
+titanic |>
+  count(Pclass.Char) |>
+  gt()
+```
+
+As expected, more individuals died from the titanic than those who survived, though the proportion of those who survived was much higher than I expected. The sex of those on board was also majorly male which is to be expected of the time. More surprisingly there were actually less second class passengers than first class. On average, those on the titanic were adults `{r} descriptives$mean`
+
+### Predictions
+
+I expect more women to survive compared to men due to emergency precautions in 1912 likely prioritizing women and children more for lifeboats than men who may be expected to sacrifice themselves for the betterment of society and future generations. Ticket class also likely influenced access to emergency equipment and precautions where higher classes may have priority access to lifesaving measures. However, the opposite could be true where lower class passengers might have also been situated on lower decks that were closer to lifeboats. Finally, young children and older adults and seniors may have had a higher mortality rate than adolescents and adults.
+
+## Fitting Nested Models
+
+```{r, model fit}
+
+# Intercept model
+mod_int <- glmmTMB(Survived ~ 1,data = titanic,
+  family = binomial(link = "logit"))
+
+# Sex
+mod_sex <- glmmTMB(
+  Survived ~ Sex,
+  data = titanic,
+  family = binomial(link = "logit"))
+
+# Sex + Class
+mod_sex_class <- glmmTMB(
+  Survived ~ Sex + Pclass.Char,
+  data = titanic,
+  family = binomial(link = "logit"))
+
+# Sex + Class + Age
+mod_sex_class_age <- glmmTMB(
+  Survived ~ Sex + Pclass.Char + Age,
+  data = titanic,
+  family = binomial(link = "logit"))
+
+```
+
+While every model and its predictors are all significant, AIC and BIC noticeably decrease between models as predictors as added, suggesting unique and substantial portions of variability are explained with each new predictor. While estimates for predictors relatively stable with the inclusion of newer predictors, the estimate for the intercept increases between models. Seemingly, being male, or being a second or third class passenger was associated with lower likelihood of survival. Additionally, younger passengers appear to have had a higher rate of survival, though the estimate for age is considerably lower than those of other variables.
+
+## Comapring Model Performance
+
+```{r, anova tests}
+
+# X^2 test comparison for nested models
+tests <- anova(mod_int, mod_sex, mod_sex_class, mod_sex_class_age) |>
+  select(Chisq, `Chi Df`, `Pr(>Chisq)`) |>
+  rename(
+    Nested.df = `Chi Df`,
+    Nested.Chisq.stat = Chisq,
+    Nested.p.value = `Pr(>Chisq)`)
+
+tests
+```
+
+### Extract Nested Model-Level Performance Statistics
+
+```{r, extract and combine model metrics}
+
+glance0 <- broom.mixed::glance(mod_int)
+glance1 <- broom.mixed::glance(mod_sex)
+glance2 <- broom.mixed::glance(mod_sex_class)
+glance3 <- broom.mixed::glance(mod_sex_class_age)
+
+mods <- c(
+  "mod0: Null",
+  "mod1: Sex",
+  "mod2: + Class",
+  "mod3: + Age")
+
+glances <- rbind(
+  glance0,
+  glance1,
+  glance2,
+  glance3)
+```
+
+```{r, combine and model comparisons}
+
+comparison_table <- cbind(
+  Model = mods,
+  glances,
+  tests)
+
+comparison_table |>
+  select(
+    Model,
+    AIC,
+    BIC,
+    logLik,
+    deviance,
+    df.residual,
+    Nested.df,
+    Nested.Chisq.stat,
+    Nested.p.value
+  ) |>
+  gt() |>
+  cols_label(
+    Model = "Model",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "Log-likelihood",
+    deviance = "Deviance",
+    df.residual = "Residual.df",
+    Nested.df = "Nested df",
+    Nested.Chisq.stat = "Nested χ²",
+    Nested.p.value = "Nested p"
+  ) |>
+  fmt_number(
+    columns = c(
+      AIC,
+      BIC,
+      logLik,
+      deviance,
+      Nested.Chisq.stat
+    ),
+    decimals = 3
+  ) |>
+  fmt(
+    columns = Nested.p.value,
+    fns = function(x) {
+      ifelse(
+        is.na(x),
+        "—",
+        ifelse(x < .001, "< .001", sprintf("%.3f", x))
+      )
+    }
+  ) |>
+  sub_missing(
+    columns = c(Nested.df, Nested.Chisq.stat),
+    missing_text = "—"
+  )
+```
+
+The third model comprising of sex, class, and age is the clear winner here on account of several factors. Mod3 has clearly lower AIC and BIC values, the lowest model deviance, lowest log-likelihood, and is significant in the nested X\^2 test. AIC and BIC decrease as predictors are added from sex =\> class =\> age; a finding which agrees with the conclusions of the nested likelihood ratio tests as those are also significant in the sequential nested models.
+
+## Evaluating Binary Logistic Regression Diagnostics
+
+### Examining Assumptions
+
+#### Linearity
+
+```{r, dharma sim}
+#| echo: true
+set.seed(10000)
+res_mod3 <- simulateResiduals(mod_sex_class_age, n = 500, plot = FALSE)
+```
+
+```{r, dharma plot}
+#| fig-height: 5.6
+#| echo: false
+plot(res_mod3)
+```
+
+Linearity appears to be fine based on teh Q-Q plot and associated tests.
+
+#### Collinearity
+
+```{r, vif}
+#| echo: false
+check_collinearity(mod_sex_class_age)
+```
+
+```{r, vif plot}
+#| echo: false
+vif_plot <- plot(check_collinearity(mod_sex_class_age))
+vif_plot
+```
+
+Collinearity based on both tests and plots appear to be normal.
+
+#### Complete Separation
+
+Coefficients and standard errors are within reason. There were no warnings from glmmTMB about convergence. Fitted probabilities are not essentially 0 or 1 for some groups.
+
+#### Influence
+
+```{r, outliers}
+testOutliers(res_mod3)
+```
+
+No significant outliers
+
+#### Events per predictor
+
+```{r, epv}
+#| echo: false
+n_event <- sum(titanic$Survived == 1)
+n_nonevent <- sum(titanic$Survived == 0)
+n_coef <- length(fixef(mod_sex_class_age)$cond)
+```
+
+Here we have `r n_event` survived and `r n_nonevent` died, with `r n_coef` coefficients in `mod_sex_class_age`.
+
+There are at least 10 events and 10 non-events (i.e., survived vs. not survived) per coefficient.
+
+#### Report Diagnositc Findings
+
+All diagnostic tests and plots do not show evidence of any assumption violations. Relevant tests and plots are non-significant and show reasonable adherence to assumptions. As such, there is no reason to doubt our confidence in our model.
+
+### Select and Report the Preferred Model
+
+The selected model that I will be reporting is the full model containing all three predictors - sex, class, and age. Nested X\^2 test values, AIC, and BIC all indicate substantive improvement in this model compared to simpler models. Furthermore, diagnostic findings do not indicate notable deviation from assumptions. While it is the most complex, it appears to be the nonetheless, the best choice of model for predicting surviving the titanic. All three predictors have clear rationale for being related to titanic survivorship.
+
+```{r, extract results}
+coefficient_results <- broom.mixed::tidy(
+  mod_sex_class_age,
+  effects = "fixed",
+  component = "cond",
+  conf.int = TRUE,
+  conf.level = 0.95)
+```
+
+```{r, table coefficients}
+
+coefficient_results |>
+  select(
+    term,
+    estimate,
+    std.error,
+    conf.low,
+    conf.high,
+    p.value
+  ) |>
+  gt() |>
+  cols_label(
+    term = "Predictor",
+    estimate = "Estimate",
+    std.error = "SE",
+    conf.low = "95% CI lower",
+    conf.high = "95% CI upper",
+    p.value = "p"
+  ) |>
+  fmt_number(
+    columns = c(
+      estimate,
+      std.error,
+      conf.low,
+      conf.high
+    ),
+    decimals = 3
+  ) |>
+  fmt(
+    columns = p.value,
+    fns = function(x) {
+      ifelse(
+        x < .001,
+        "< .001",
+        sprintf("%.3f", x)
+      )
+    }
+  )
+```
+
+#### Interpreting Co-Efficients
+
+```{r, or ci}
+or_ci <- exp(confint(mod_sex_class_age, parm = "beta_"))
+or_ci
+```
+
+Holding class and age constant, identifying as a male was associated with `r round(exp(fixef(mod_sex_class_age)$cond[["Sexmale"]]), 2)` times the odds of surviving, 95% CI \[`r round(or_ci["Sexmale", 1], 2)`, `r round(or_ci["Sexmale", 2], 2)`\].
+
+Holding sex and age constant, being a second class passenger is associated with `r round(exp(fixef(mod_sex_class_age)$cond[["Pclass.CharSecond Class"]]), 2)` times the odds of surviving, 95% CI \[`r round(or_ci["Pclass.CharSecond Class", 1], 2)`, `r round(or_ci["Pclass.CharSecond Class", 2], 2)`\]; being a third class passenger is associated with `r round(exp(fixef(mod_sex_class_age)$cond[["Pclass.CharThird Class"]]), 2)` times the odds of surviving, 95% CI \[`r round(or_ci["Pclass.CharThird Class", 1], 2)`, `r round(or_ci["Pclass.CharThird Class", 2], 2)`\].
+
+Holding sex and class constant, a 1-year increase in age is associated with `r round(exp(fixef(mod_sex_class_age)$cond[["Age"]]), 2)` times the odds of surviving, 95% CI \[`r round(or_ci["Age", 1], 2)`, `r round(or_ci["Age", 2], 2)`\].
+
+#### Overall Model Performance
+
+```{r, selected model performance}
+selected_row <- comparison_table |>
+  filter(Nested.p.value < .05) |>
+  slice_tail(n = 1)
+
+selected_row |>
+  select(
+    Model,
+    AIC,
+    BIC,
+    logLik,
+    deviance,
+    df.residual,
+    Nested.df,
+    Nested.Chisq.stat,
+    Nested.p.value
+  ) |>
+  gt() |>
+  cols_label(
+    Model = "Model",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "Log-likelihood",
+    deviance = "Deviance",
+    df.residual = "Residual df",
+    Nested.df = "Nested df",
+    Nested.Chisq.stat = "Nested χ²",
+    Nested.p.value = "Nested p"
+  ) |>
+  fmt_number(
+    columns = where(is.numeric),
+    decimals = 2
+  )
+
+```
+
+### Results Summarized
+
+> We fit a binomial GLM with a logit link predicting titanic surviorship from sex, ticket class, and age. Being a male was associated with lower odds of surviving, OR = `r round(exp(fixef(mod_sex_class_age)$cond[["Sexmale"]]), 2)`, 95% CI \[`r round(or_ci["Sexmale", 1], 2)`, `r round(or_ci["Sexmale", 2], 2)`\]. Being a second class passenger was associated with lower odds of surviving, OR = `r round(exp(fixef(mod_sex_class_age)$cond[["Pclass.CharSecond Class"]]), 2)`, 95% CI \[`r round(or_ci["Pclass.CharSecond Class", 1], 2)`, `r round(or_ci["Pclass.CharSecond Class", 2], 2)`\] Being a third class passenger was associated with lower odds of surviving, OR = `r round(exp(fixef(mod_sex_class_age)$cond[["Pclass.CharThird Class"]]), 2)`, 95% CI \[`r round(or_ci["Pclass.CharThird Class", 1], 2)`, `r round(or_ci["Pclass.CharThird Class", 2], 2)`\] Being older was associated with lower odds of surviving such that for every one year of age, the odds of surviving was `r round(exp(fixef(mod_sex_class_age)$cond[["Age"]]), 2)`, 95% CI \[`r round(or_ci["Age", 1], 2)`, `r round(or_ci["Age", 2], 2)`\].
+
+#### Sex
+Visualization of sex and survivorship
+
+```{r, pred stat}
+#| fig-height: 4
+#| fig-width: 3
+
+mod_sex_class_age$frame$Sex <- as.factor(mod_sex_class_age$frame$Sex)
+
+pred_sat <- mod_sex_class_age |>
+  ggpredict(terms = "Sex [male, female]")
+
+
+ggplot(pred_sat, aes(x, predicted)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = .3) +
+  labs(
+    x = "Sex",
+    y = "Predicted Probability of Surviving the Titanic"
+  ) +
+  theme_classic()
+```
+
+## Findings and Limitations
+
+The findings of the full (and preferred) model match expectations based on what we know of emergency procedures of the time. For instance, men had a drastically lower odds of surviving than women such that men had `r round(exp(fixef(mod_sex_class_age)$cond[["Sexmale"]]), 2)` times the odds of surviving. This makes sense since culture and protocol at the time was to prioritize women and children first over men in evacuations. In the same vein, this may also help explain why younger passengers had greater survivorship where every 1 year of a passenger's age was associated with `r round(exp(fixef(mod_sex_class_age)$cond[["Age"]]), 2)` odds of surviving. Thus, this protocol of "women and children" on lifeboats/rafts first may play a large role in answering who survived the titanic since (to my recollection), the rate of survival for those who did not make it onto a raft was nearly none. Furthermore, it is unsurprising that ticket class affected rate of survival. In this case, those of lower ticket classes than first class such as second or third class ticket holders had dramatically lower rates of survival. This would support, though not necessarily confirm the hypothesis that first-class ticket holders had greater odds of survival due to better access to evacuation and emergency protocol and equipment. More hypothetically, since ticket class is likely associated with SES, it is also possible that those of higher education and wealth may have had greater personal knowledge and access to lifesaving measures. Put together, the model comparisons suggest that all three (i.e., sex, class, age) are notable predictors of surviving the Titanic. 
+While there are likely more predictors at play, these three predictors of sex, class, and age very likely play a large part in determining who survives. Nonetheless, it is possible that the interpretation of these predictors in our current models and estimates don't fully capture their effects and nuances. For example, here, we examine age in a linear fashion, without capturing the nuance of a potential non-linear relationship with survivorship. For instance, it may be possible that infants and children under 10 or 11 may have drastically lower survival rates similar to the elderly. Though in this case, all our model and estimates can capture is that survival decreases as age increases - which could be an inaccurate statement if the relationship is skewed. It would therefore be pertinent to investigate potential nuances with age as a predictor of survival, and also look into potential interactions between sex, class, and other factors. 

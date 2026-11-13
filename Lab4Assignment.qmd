@@ -1,0 +1,526 @@
+---
+title: "Binary Logistic Regression: Model Specification, Comparison, and Interpretation"
+author: "Noah"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Overview
+
+In this lab, you will apply binary logistic regression analysis to investigate the factors associated with surviving the Titanic crash. Rather than estimating a single binary logistic regression model, you will develop and compare a series of competing models, evaluate their performance, examine binary logistic regression diagnostics, and interpret the results of your preferred model.
+
+Your goal is to produce a **reproducible statistical report** that demonstrates not only how to estimate binary logistic regression models, but also how to make and justify decisions about model specification and selection.
+
+You will complete the analysis in **R**, document your workflow in **Quarto**, and publish the rendered report using **GitHub Pages**.
+
+### **Learning objectives**
+
+By the end of this lab, you should be able to:
+
+1.  **Specify multiple binary logistic regression models** based on substantive predictions.
+
+2.  **Estimate and compare** nested binary logistic regression models using AIC, BIC and likelihood-ratio tests.
+
+3.  **Evaluate binary logistic regression assumptions** and identify potentially influential observations.
+
+4.  **Select** a preferred model and **justify** that decision.
+
+5.  **Extract, report, and interpret** binary logistic regression coefficients using `broom.mixed::tidy()`.
+
+6.  **Visualize** your data using the `ggeffects::gpredict()`
+
+7.  **Communicate** your analysis in a reproducible Quarto report.
+
+------------------------------------------------------------------------
+
+## **Part 1: Configure your project and examine the data**
+
+### **1.1. Create your project**
+
+Create a new GitHub repository for this lab, following the workflow established in Lab 1.
+
+Your repository should contain:
+
+-   An RStudio project connected to your GitHub repository.
+
+-   An index.qmd file containing your analysis and written report.
+
+-   A \_quarto.yml file configured to render your report to the docs/ directory.
+
+-   A docs/ directory containing the rendered website.
+
+Your analysis must be reproducible from the files in your repository.
+
+**Important:** As in Lab 1, you should distinguish between commands used for interactive exploration in the R Console and commands required to reproduce your results in Quarto.
+
+You may use the Console to inspect datasets, experiment with model specifications, and troubleshoot errors. However, every command necessary to generate the results presented in your report must appear in your Quarto document.
+
+### **1.2. Load the required packages**
+
+You will need the following packages:
+
+-   `dplyr` and `tidyr` for data manipulation.
+
+-   `ggplot2` for visualization.
+
+-   `broom.mixed` for extracting binary logistic regression results.
+
+-   `performance` for binary logistic regression diagnostics and model comparisons.
+
+-   `gt` for formatting tables.
+
+-   `ggeffects` for binary logistic regression visualization
+
+-   `glmmTBM` for binary logistic regression models.
+
+-   `DHARMa` for binary logistic regression diagnostic plots.
+
+-   `titanic` for the dataset for today’s lab.
+
+Install any missing packages in the **R Console**. Load the packages in a setup chunk near the beginning of your Quarto document.
+
+### **1.3. Load the dataset**
+
+We will use the `titanic_train` dataset from the `titanic` package. I have adapted this dataset to enhance interpretability and ensure that we are working with the same number of cases for each model. Please run this code below to load the data for this assignment:
+
+```{r, setup}
+
+library(glmmTMB)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom.mixed)
+library(performance)
+library(gt)
+library(readr)
+library(DHARMa)
+library(ggeffects)
+library(titanic)
+
+titanic <- titanic_train
+
+#Keep the same complete-case sample for every model
+titanic <- titanic |>
+  select(Survived, Sex, Age, Pclass) |>
+  drop_na() |>
+  mutate(
+    Sex.Binary = case_when(
+      Sex == "male" ~ 0,
+      Sex == "female" ~ 1)) |>
+  mutate(
+    Survived.Char = case_when(
+      Survived == 0 ~ "Died",
+      Survived == 1 ~ "Survived")) |>
+  mutate(
+    Pclass.Char = case_when(
+      Pclass == "1" ~ "First Class",
+      Pclass == "2" ~ "Second Class",
+      Pclass == "3" ~ "Third Class")) |>
+  mutate(Pclass = factor(Pclass, levels = c(1, 2, 3))) |>
+  select(Survived, Survived.Char, Sex, Sex.Binary, Pclass, Pclass.Char, Age)
+ 
+n <- nrow(titanic)
+```
+
+This dataset contains data on **714 passengers**. The binary outcome variable is `Survived`: whether the passenger survived or died in the Titanic crash. Several other variables summarize characteristics of the Titanic passengers that could influence survival.
+
+For this lab, we will focus on four variables:
+
+|  |  |  |
+|----|----|----|
+| **Variable** | **Description** | **Role** |
+| Survived | Whether a passenger survived or died in the crash | Outcome |
+| Sex | Sex reported on legal documents | Predictor |
+| Age | Self-reported age | Predictor |
+| Pclass | What type of ticket was purchased; our proxy for socioeconomic status (SES) | Predictor |
+
+### **1.4. Explore the data**
+
+Before estimating any models, familiarize yourself with the variables and their cell counts.
+
+**In the R Console:**
+
+-   Inspect the first several observations.
+
+-   Examine the dataset's structure.
+
+-   Calculate descriptive statistics for continuous variables.
+
+-   Explore the cell counts of the variables.
+
+**In your Quarto report:**
+
+Include:
+
+1.  A formatted table reporting the mean, standard deviation, minimum, and maximum for the continuous variable.
+
+2.  A formatted table reporting the cell counts for each categorical variable.
+
+3.  A short paragraph describing the most important patterns you observe.
+
+Your discussion should consider whether the cell counts for the categorical variables are evenly distributed and whether the exploratory results are consistent with your expectations.
+
+------------------------------------------------------------------------
+
+## **Part 2: Specify competing binary logistic regression models**
+
+### **2.1. Develop your predictions**
+
+Before fitting your models, write a short paragraph explaining why you expect the three predictors to be associated with survival of the Titanic crash.
+
+Consider the following questions:
+
+-   How might gender/sex have influenced how people were treated in emergency situations in 1912?
+
+-   Could one's ticket class (our proxy for socioeconomic status \[SES\]) have influenced who was prioritized in emergency situations?
+
+-   How might age, particularly whether someone was a child or an adult, have influenced how they were treated in emergency situations?
+
+These predictions should motivate your model specifications.
+
+### **2.2. Specify four nested models**
+
+Estimate the following models:
+
+|  |  |  |
+|----|----|----|
+| **Model** | **Predictors** | **Purpose** |
+| mod0: Null | Intercept only | Establish a baseline |
+| mod1: Sex | Sex | Evaluate sex |
+| mod2: Sex + Pclass | Sex, Pclass | Evaluate the additional contribution of ticket class |
+| mod3: Sex + Pclass + Age | Sex, Pclass, Age | Evaluate the additional contribution of age |
+
+Use `glmmTMG()` to estimate each model, assigning each fitted model to a clearly named object.
+
+### **2.3. Explore your fitted models**
+
+In the **R Console**, use `summary()` to inspect the results of each fitted model.
+
+Pay particular attention to:
+
+-   The estimated binary logistic regression coefficients.
+
+-   The direction and magnitude of predictor associations.
+
+-   The model AIC and BIC.
+
+-   How the intercept changes as additional predictors are included.
+
+In your Quarto report, briefly explain how the interpretation of the intercept changes between mod1, mod2, and mod3.
+
+You do not need to reproduce the complete `summary()` output for every model.
+
+------------------------------------------------------------------------
+
+## **Part 3: Compare model performance**
+
+You will compare the four models using **nested-model χ²-tests** and two measures of overall performance.
+
+### **3.1. Conduct nested-model χ²-tests**
+
+Use `anova()` to compare all four models in a single call, in the order mod0, mod1, mod2, mod3.
+
+The resulting table will allow you to evaluate three questions:
+
+1.  Does `Sex` explain significantly more variation than the intercept-only model?
+
+2.  Does adding `Pclass` improve model fit beyond `Sex`?
+
+3.  Does adding `Age` increase improve model fit beyond `Sex` and `Pclass`?
+
+Retain the following information from the ANOVA results:
+
+-   Residual degrees of freedom.
+
+-   Change in degrees of freedom.
+
+-   χ²-statistic for the nested-model comparison.
+
+-   p-value for the nested-model comparison.
+
+Use `select()` and `rename()` to organize these results into a clearly labelled data frame.
+
+### **3.2. Extract nested model-level performance statistics**
+
+Use `broom.mixed::glance()` to extract nested model-level statistics for each of the four fitted models.
+
+Combine the results into one data frame using `rbind()` or `bind_rows()`.
+
+Include a column identifying each model.
+
+For this lab, focus on:
+
+-   **AIC:** Evaluates model fit while penalizing model complexity. Lower values indicate a preferred balance between fit and complexity.
+
+-   **BIC:** Similar to AIC, but applies a stronger penalty for model complexity. Lower values are preferred.
+
+-   **Likelihood-ratio test (χ²):** Tests whether adding predictors significantly improves model fit relative to the preceding model. A statistically significant p-value (p \< .05) indicates that the additional predictors improve model fit.
+
+### **3.3. Create a combined model-comparison table**
+
+Combine the model-performance statistics with the nested-model test results.
+
+You may use `cbind()` because both sets of results contain the same four models in the same order.
+
+Use `gt()` to create a professionally formatted table containing:
+
+|  |  |
+|----|----|
+| **Column** | **Meaning** |
+| Model | Model identifier |
+| AIC | Evaluates model fit while penalizing model complexity |
+| BIC | Similar to AIC, but applies a stronger penalty for model complexity. |
+| logLik | Measures how well a model explains the observed data.  |
+| deviance | Measures how poorly a model fits the observed data, relative to a perfectly fitting (saturated) model. Obtained by multiplying the logLik by -2. |
+| Residual df | Residual degrees of freedom |
+| Nested df | Degrees of freedom added by the new predictor(s) |
+| Nested χ² | χ²-statistic comparing the model with its predecessor |
+| Nested p | p-value for the nested comparison |
+
+Format the numerical results to an appropriate number of decimal places.
+
+### **3.4. Interpret the comparisons**
+
+Write a paragraph addressing the following:
+
+1.  Which model provides the best fit to the data, considering both model fit and complexity?
+
+2.  How do AIC and BIC change as predictors are added?
+
+3.  Which additions of predictors produce statistically significant improvements in model fit, based on the likelihood-ratio tests?
+
+4.  Do AIC and BIC support the same conclusions as the likelihood-ratio tests? Why or why not?
+
+Explain what the pattern of results suggests about the contribution of each predictor.
+
+------------------------------------------------------------------------
+
+## **Part 4: Evaluate binary logistic regression diagnostics**
+
+### **4.1. Examine the assumptions**
+
+Select the most promising model based on your comparisons in Part 3.
+
+Evaluate the following binary logistic regression assumptions:
+
+-   **Linearity to the logit scale:** Is the relationship between predictors and the outcome adequately represented by the model? Is the residual variability reasonably uniform across fitted values? (use `DHARMa::` diagnostic plots)
+
+-   **Collinearity:** Are predictors so strongly related that their unique contributions may be difficult to estimate precisely?
+
+-   **Complete separation:** Does any predictor perfectly predict the outcome variable?
+
+-   **Influential observations:** Are there observations that may disproportionately influence the fitted model? (use `DHARMa::` again)
+
+-   **Events per predictor:** Are there enough events for each coefficient of your predictor variable? 
+
+### **4.2. Report your diagnostic findings**
+
+Include at least one set of diagnostic plots in your Quarto report.
+
+Write a short paragraph explaining:
+
+1.  Which assumptions appear reasonably satisfied.
+
+2.  Whether any potential problems are evident.
+
+3.  Whether those problems affect your confidence in or interpretation of the model.
+
+Avoid treating binary logistic regression assumptions as a mechanical checklist. Explain what the diagnostic results imply for the interpretation of your findings.
+
+------------------------------------------------------------------------
+
+## **Part 5: Select and report your preferred model**
+
+### **5.1. Select a model**
+
+Identify the model you believe provides the most defensible representation of the relationship between surviving the sinking of the Titanic and our passenger-specific variables.
+
+Your decision should consider:
+
+-   Nested-model χ²-tests.
+
+-   AIC.
+
+-   BIC.
+
+-   Model complexity.
+
+-   Diagnostic findings.
+
+-   Substantive interpretability.
+
+You are **not required to select the most complex model**.
+
+Write a paragraph explaining why your preferred model is more appropriate than the alternatives.
+
+### **5.2. Create a coefficient table**
+
+Use `broom.mixed::tidy()` to extract the unstandardized binary logistic regression coefficients from your preferred model.
+
+Request 95% confidence intervals.
+
+Use `gt()` to create a formatted coefficient table containing:
+
+-   Predictor name.
+
+-   Unstandardized coefficient estimate.
+
+-   Standard error.
+
+-   95% confidence interval.
+
+-   p-value.
+
+Do not simply paste the output from summary() into your report.
+
+### **5.3. Interpret the coefficients**
+
+Write a paragraph interpreting the binary logistic regression coefficients in your preferred model.
+
+For each included predictor:
+
+1.  Interpret the coefficient on the **log-odds scale**.
+
+2.  Transform and interpret the coefficients as **odds ratios**.
+
+3.  Explain what is being held constant when interpreting each predictor in your model.
+
+Use inline R code referencing your `tidy()` results so that the numerical values in your written interpretation update automatically when the model is re-estimated.
+
+For example, you can use `filter()` and `pull()` to retrieve the coefficient estimates, odds ratios, and confidence interval limits for a particular predictor.
+
+You should not manually type coefficient estimates, odds ratios, or confidence intervals into your narrative.
+
+### **5.4. Report overall model performance**
+
+Using `gt()`, create a table reporting the overall model performance for your preferred model.
+
+### **5.5. Provide an overarching paragraph summarizing your results**
+
+Provide a summary of the analysis you conducted, along with the results of your preferred model (in the metric of **odd ratios**).
+
+### **5.6. Visualize one of your predictors using `ggeffects`**
+
+Using `ggeffects::ggpredict()` and `ggplot2`, select one predictor from your preferred model and visualize it's association with the outcome variable, `Survived`.
+
+------------------------------------------------------------------------
+
+## **Part 6: Discuss your findings and limitations**
+
+What do your results suggest about the relative importance of sex, ticket type (proxy for SES), and age for survival outcomes on the Titanic?
+
+------------------------------------------------------------------------
+
+## **Part 7: Render, publish, and submit**
+
+### **7.1. Verify reproducibility**
+
+Before submitting your work:
+
+1.  Save your Quarto document.
+
+2.  Restart your R session.
+
+3.  Render your Quarto document from a clean session.
+
+4.  Confirm that all tables, figures, and inline statistical results are generated successfully.
+
+5.  Inspect the rendered HTML report for formatting problems.
+
+Your report should not depend on objects created manually in the R Console.
+
+### **7.2. Publish to GitHub Pages**
+
+Following the workflow from Lab 1:
+
+1.  Commit your completed Quarto document.
+
+2.  Commit the rendered output in docs/.
+
+3.  Push your changes to GitHub.
+
+4.  Verify that your GitHub Pages website displays the completed report.
+
+### **7.3. Submit your work**
+
+Submit the following links:
+
+-   **GitHub repository:** Your source code and project files.
+
+-   **GitHub Pages website:** Your rendered statistical report.
+
+Your report should contain all required analyses, tables, figures, interpretations, and conclusions.
+
+------------------------------------------------------------------------
+
+## **Final submission checklist**
+
+### **Data exploration**
+
+-   Dataset loaded and analysis variables identified.
+
+-   Descriptive statistics presented in a formatted table.
+
+-   Cell counts explored and presented.
+
+-   Exploratory patterns discussed.
+
+### **Model specification and comparison**
+
+-   Four prescribed binary logistic regression models estimated.
+
+-   Nested-model χ²-tests conducted.
+
+-   Model-level statistics extracted using `broom.mixed::glance()`.
+
+-   Combined model-comparison table created using `gt()`.
+
+-   Model-comparison results interpreted.
+
+### **Diagnostics and model selection**
+
+-   Binary logistic regression diagnostics examined.
+
+-   Diagnostic plots included.
+
+-   Potential assumption violations discussed.
+
+-   Preferred model selected and justified.
+
+### **Reporting and interpretation**
+
+-   Coefficient table generated using `tidy()` and `gt()`.
+
+-   Coefficients interpreted in context.
+
+-   AIC, BIC, and Likelihood-ratio test (χ²) reported.
+
+-   Visualization with `ggeffects::ggpredict()` reported.
+
+-   Numerical interpretations generated using inline R code.
+
+-   Substantive conclusions and limitations discussed.
+
+### **Reproducibility and submission**
+
+-   Quarto document renders from a clean R session.
+
+-   Code, tables, plots, and written interpretations are synchronized.
+
+-   Changes committed and pushed to GitHub.
+
+-   GitHub Pages website verified.
+
+-   Repository and website links submitted.
+
+------------------------------------------------------------------------
